@@ -1,6 +1,6 @@
 /*:
 * @target MZ
-* @plugindesc A combat modification for SBRif... that attaches a grid-based positioning system to Combat
+* @plugindesc A combat modification for SBRif... that attaches a grid-based positioning system to combat
 * @author setsuna04
 *
 *
@@ -8,103 +8,267 @@
 */
 
 const pluginName = "SBR_GridCombat";
-const parameters = PluginManger.parameters(pluginName);
+const parameters = PluginManager.parameters(pluginName);
 
 (() => {
 
-    const pluginName = "SBR_Test";
-    const parameters = PluginManger.parameters(pluginName);
-
     // Battle Positions
     class BattlePos {
-        constructor(distance, lane) {
+        constructor(distance, lane, screenX, screenY, posID) {
             this.distance = distance;
             this.lane = lane;
-            this.battler = null;
+
+            this.stationedBattler = null;
+
+            this.posID = posID;
+            this.screenX = screenX;
+            this.screenY = screenY;
         }
     }
 
-    // For enemies, consider screenX and screenY position for all Positions
-    class EnemyBattlePos extends BattlePos{
-        constructor(distance, lane, screenX, screenY) {
-           super(distance, lane);
-           this.screenX = screenX;
-           this.screenY = screenY
-           this.battler = null;
-        }
-    }
-    
     // The Player Side and the Enemy Side each have a set of NINE Positions 
-    // where Battlers are stored and can move between
-    const SHORT_LEFT_P = new BattlePos("SHORT", "LEFT")
-    const SHORT_CENTER_P = new BattlePos("SHORT", "CENTER")
-    const SHORT_RIGHT_P = new BattlePos("SHORT", "RIGHT")
-    const MID_LEFT_P = new BattlePos("MID", "LEFT")
-    const MID_CENTER_P = new BattlePos("MID", "CENTER")
-    const MID_RIGHT_P = new BattlePos("MID", "RIGHT")
-    const LONG_LEFT_P = new BattlePos("LONG", "LEFT")
-    const LONG_CENTER_P = new BattlePos("LONG", "CENTER")
-    const LONG_RIGHT_P = new BattlePos("LONG", "RIGHT")
+    // where Battlers are stored and can move between on SEPARATE Grids
+    function createBattleGrid()
+    {
 
-    const SHORT_LEFT_E = new EnemyBattlePos("SHORT", "LEFT", 0, 0)
-    const SHORT_CENTER_E = new EnemyBattlePos("SHORT", "CENTER", 0, 0)
-    const SHORT_RIGHT_E = new EnemyBattlePos("SHORT", "RIGHT", 0, 0)
-    const MID_LEFT_E = new EnemyBattlePos("MID", "LEFT", 0, 0)
-    const MID_CENTER_E = new EnemyBattlePos("MID", "CENTER", 0, 0)
-    const MID_RIGHT_E = new EnemyBattlePos("MID", "RIGHT", 0, 0)
-    const LONG_LEFT_E = new EnemyBattlePos("LONG", "LEFT", 0, 0)
-    const LONG_CENTER_E = new EnemyBattlePos("LONG", "CENTER", 0, 0)
-    const LONG_RIGHT_E = new EnemyBattlePos("LONG", "RIGHT", 0, 0)
-    
-    const PLAYER_POS = [SHORT_LEFT_P, SHORT_CENTER_P, SHORT_RIGHT_P,
-                        MID_LEFT_P, MID_CENTER_P, MID_RIGHT_P,
-                        LONG_LEFT_P, LONG_CENTER_P, MID_RIGHT_P]
+        return [
+            new BattlePos ("SHORT", "LEFT", 0, 0, 0),
+            new BattlePos ("SHORT", "CENTER", 0, 0, 1),
+            new BattlePos ("SHORT", "RIGHT", 0, 0, 2),
 
+            new BattlePos ("MID", "LEFT", 0, 0, 3),
+            new BattlePos ("MID", "CENTER", 0, 0, 4),
+            new BattlePos ("MID", "RIGHT", 0, 0, 5),
 
-    const ENEMY_POS = [SHORT_LEFT_E, SHORT_CENTER_E, SHORT_RIGHT_E,
-                        MID_LEFT_E, MID_CENTER_E, MID_RIGHT_E,
-                        LONG_LEFT_E, LONG_CENTER_E, MID_RIGHT_E]
-
-
-    // Every Battler now has an ActiveBattlePos where they'll be placed at the start of Combat.
-    // The initial BattlePos is considered its starting BattlePos
-    const _Game_Battler_initMembers = Game_Battler.prototype.initMembers;
-
-    Game_Battler_initMembers.prototype.initMembers = function() {
-        _Game_Battler_initMembers.call(this);
-
-        this._activeBattlePos = null;
-    }
-
-    // Setter func for Battler BattlePos
-    Game_Battler.prototype.setActiveBattlePos = function (newValue) {
-        if (newValue instanceof BattlePos || newValue === null)
-        {
-            this._activeBattlePos = newValue;
-        }
-        else
-        {
-            console.warn("Var of incorrect type assigned to Battler's BattlePos")
-        }
+            new BattlePos ("LONG", "LEFT", 0, 0, 6),
+            new BattlePos ("LONG", "CENTER", 0, 0, 7),
+            new BattlePos ("LONG", "RIGHT", 0, 0, 8)
+        ]
 
     }
 
-    // Every Enemy Battler should also have a sprite for each potential Distance (Do NOT modify Actors. Modify Enemies EXCLUSIVELY)
-    // Keep track of and change Enemy Sprites in accordance to their Position
+    const PLAYER_GRID = createBattleGrid();
+    // Position ID Visual:
+    // SHORT  [0 1 2
+    // MID     3 4 5
+    // LONG    6 7 8]
 
-    // When an Enemy Battler dies, its BattlePos should clear itself
+    const ENEMY_GRID = createBattleGrid();
+    // Position ID Visual:
+    // LONG   [6 7 8
+    // MID     3 4 5
+    // SHORT   0 1 2]
 
-    // Change Enemy Battler sprite based on current Distance
+    function clearBattleGrid(grid)
+    {
+        for (const pos of grid)
+        {
+            pos.stationedBattler = null;
+        }
+    }
 
-    // On Battle end, ENEMY_POS should clear all BattlePos of Battlers
+    // Every Actor has their Initial Battle Position stored in the custom property, ._initBattlePos
+    // In order, every Troop member has their Initial Battle Position stored in the notetag meta-data, <InitBattlePos: 1, 2, 3, ...>
+
+    //======================================================================================================================================================
+    //======================================================================================================================================================
     
-    // Function to move a Battler to a BattlePos
+    // Initialize all Party Members' Battle Positions
 
+    // _initBattlePos = 0, 1,... or 8. Each number corresponds with a Battle Position's ID. The Party Member will
+    // set its Initial Position to the Battle Position with the same ID
 
-    // Function to swap to Battlers' BattlePos
+    const _Game_Actor_setup = Game_Actor.prototype.setup;
+    Game_Actor.prototype.setup = function(actorId) {
+        _Game_Actor_setup.call(this, actorId);
+        this._initBattlePos = null;
+    };
+
+    Game_Actor.prototype.battlePos = function() {
+        return this._initBattlePos;
+    };
+
+    Game_Actor.prototype.setBattlePos = function(pos) {
+        this._initBattlePos = pos;
+    };
+
+    // Set max Party Members to 9
+    const _Game_Party_maxBattleMembers = Game_Party.prototype.maxBattleMembers;
+    Game_Party.prototype.maxBattleMembers = function() {
+        return 9; 
+    };
+
     
+    //======================================================================================================================================================
+    //======================================================================================================================================================
 
-    // Metadata reading
+    // Altered Menu
+    // Move HP to the top of Actor display, and MP to the bottom
+    Window_StatusBase.prototype.placeBasicGauges = function(actor, x, y) {
+        this.placeGauge(actor, "hp", x, y - 40);
+        this.placeGauge(actor, "mp", x, y + this.gaugeLineHeight() + 40);
+    };
 
+    // Draw HP, MP, and Icons
+    Window_StatusBase.prototype.drawActorSimpleStatus = function(actor, x, y) {
+        const lineHeight = this.lineHeight();
+
+        this.drawActorIcons(actor, x, y + lineHeight * 2);
+        this.placeBasicGauges(actor, x, y + lineHeight);
+    };
+
+    // Display up to 9 tiles
+    Window_MenuStatus.prototype.maxItems = function() {
+        return 9;
+    };
+
+    // Resized the Party Member Display to 3x3 grid of tiles
+    Window_MenuStatus.prototype.maxCols = function() {
+        return 3;
+    };
+
+    // Center actor images to the middle of their tiles
+    Window_MenuStatus.prototype.drawItemImage = function(index) {
+
+        const actor = this.actor(index);
+
+        if (!actor)
+        {
+            return;
+        }
+        else 
+        {
+            const actor = this.actor(index);
+            const rect = this.itemRect(index);
+            const width = ImageManager.standardFaceWidth;
+            const height = rect.height - 2;
+            this.changePaintOpacity(actor.isBattleMember());
+            this.drawActorFace(actor, rect.x + 15, rect.y + 1, width, height);
+            this.changePaintOpacity(true);
+        }
+
+    };
+    
+    // Displays only each Actor's face, HP, and MP on each slotted tile
+    Window_MenuStatus.prototype.drawItemStatus = function(index) {
+
+        const actor = this.actor(index);
+        
+        if (!actor)
+        {
+            return;
+        }
+        else 
+        {
+            const actor = this.actor(index);
+            const rect = this.itemRect(index);
+            const x = rect.x
+            const y = rect.y;
+            this.drawActorSimpleStatus(actor, x, y);
+        }
+
+    };
+    
+    // Manages Party Member Initial Battle Positions
+
+
+    // When a Party Member joins, check through the Initial Positions from least to greatest, assigning them
+    // to the first available slot found
+
+
+    //======================================================================================================================================================
+    //======================================================================================================================================================
+
+
+    // Assigns Battlers to a Position in a Grid
+    function assignBattlerToGrid(grid, battler, posID)
+    {
+        if (posID > 8)
+        {
+            throw new Error(
+                `${posID} for ${battler} EXCEEDS POSITION ID MAXIMUM OF '8'`
+            );
+        }
+        if (posID < 0)
+        {
+            throw new Error(
+                `${posID} for ${battler} BELOW POSITION ID MINIMUM OF '0'`
+            );
+        }
+
+        for (const pos of grid)
+        {
+            if (pos.posID === posID) 
+            {
+                if (pos.stationedBattler === null)
+                {
+                    pos.stationedBattler = battler;
+                }
+                else
+                {
+                    throw new Error(
+                        `POSITION ${pos.distance}_${pos.lane} IS ALREADY IN USE`
+                    );
+                }
+            }
+        }
+    }
+
+    // On Battle Start...
+      // For each Actor, read their _initBattlePos property
+      // Check if that Position is taken by a partyBattler. If it is, throw new error. If not, assign them to that Position
+      // ...
+      // For each Troop member (aka, Enemy), read their InitBattlePosition notetag meta-data
+      // Check if that Position is taken by an enemyBattler. If it is, throw new error. If not, assign them to that Position
+    const _BattleManager_startBattle = BattleManager.startBattle;
+    BattleManager.startBattle = function() {
+        _BattleManager_startBattle.call(this);
+
+        // Make sure each Grid is clear
+        clearBattleGrid(PLAYER_GRID);
+        clearBattleGrid(ENEMY_GRID);
+        
+        // Assign Actor Positions
+        for (const actor of $gameParty.battleMembers()) {
+            assignBattlerToGrid(PLAYER_GRID, actor, actor.battlePos())
+        }
+        console.log("All Party Members assigned to a Position")
+
+        // Assign Enemy Positions
+        const troopInitialPos = $gameTroop.troop().meta.InitialBattlePosition.split(",").map(s => Number(s.trim()));
+
+        // Ensure there's an equivalent amount of Enemies and Positions
+        if ($gameTroop.members().length != enemyInitialPos.length) {
+            throw new Error(
+                "THERE IS AN UNEQUAL AMOUNT OF ENEMIES AND INITIAL POSITIONS IN THE TROOP"
+            );
+        }
+
+        let i = 0;
+        troopInitialPos.forEach(initPos => {
+            assignBattlerToGrid(ENEMY_GRID, $gameTroop.members()[i], initPos);
+            i++;
+        });
+        console.log("All Enemies assigned to a Position")
+
+        console.log("Battle Start");
+    };
+
+    //======================================================================================================================================================
+    //======================================================================================================================================================
+
+    // During Battle...
+      // Base on each Position's ScreenX and ScreenY, assign the location of each Battler from furthest to closest
+      // If an Enemy dies, free up their Position
+
+    // Function: Reassign a Battler's Position
+      // Check if they're already in a Position. If they are, remove them
+      // Check if the new Position is empty. If it is, assign them. If not, throw new error
+
+    // Function: Swap two Battlers' Positions
+      // Check that both Positions are filled. If not, throw new error
+      // If they are, swap them
+
+    // Function: Rewrite
 
 })();
