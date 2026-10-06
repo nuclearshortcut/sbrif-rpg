@@ -231,4 +231,7 @@
 
     // TODO - Skills
 
+    // (M) Demon
+    // (S) Demon
+
 })();
