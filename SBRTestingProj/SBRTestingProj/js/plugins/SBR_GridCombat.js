@@ -1,10 +1,22 @@
 /*:
 * @target MZ
-* @plugindesc A modification for SBRif... that attaches a grid-based positioning system to combat
+* @plugindesc A modification for SBRif that attaches a grid-based positioning system to Combat
 * @author setsuna04
 *
+* @command PositionEnemy
+* @text Set an Enemy's Position
+* @desc Change an Enemy's Node, and potentially their sprite.
 *
-*
+* @arg enemyToSet
+* @text Enemy Troop Index
+* @desc Index of the enemy to change within the troop
+* @type number
+* 
+* @arg targetNode
+* @text Node Position ID
+* @desc Positional ID of the Node the enemy is moving to
+* @type number
+* 
 */
 
 (() => {
@@ -16,515 +28,210 @@
     // POSITIONING FRAMEWORK
     //======================================================================================================================================================
 
-    // Battle Positions
-    class BattlePos {
-        constructor(distance, lane, screenX, screenY, posID) {
-            this.distance = distance;
+    // Battle Nodes
+    class BattleNode {
+        constructor(row, lane, screenX, screenY, posID) {
+            this.row = row;
             this.lane = lane;
 
-            this.stationedBattler = null;
+            this.enemyBattler = null; // Enemy Battler stored at the position
 
-            this.posID = posID;
-            this.screenX = screenX;
+            this.screenX = screenX; 
             this.screenY = screenY;
+            this.posID = posID;
         }
     }
 
-    // The Player Side and the Enemy Side each have a set of NINE Positions 
-    // where Battlers are stored and can move between on SEPARATE Grids
+    // Grid has a set of NINE positional Nodes where Enemies are stored and can move between on SEPARATE Grids
     function createBattleGrid()
     {
 
         return [
-            new BattlePos ("SHORT", "LEFT", 0, 0, 0),
-            new BattlePos ("SHORT", "CENTER", 0, 0, 1),
-            new BattlePos ("SHORT", "RIGHT", 0, 0, 2),
+            new BattleNode ("FRONT", "LEFT", 500, 500, 0),
+            new BattleNode ("FRONT", "CENTER", 0, 0, 1),
+            new BattleNode ("FRONT", "RIGHT", 0, 0, 2),
 
-            new BattlePos ("MID", "LEFT", 0, 0, 3),
-            new BattlePos ("MID", "CENTER", 0, 0, 4),
-            new BattlePos ("MID", "RIGHT", 0, 0, 5),
+            new BattleNode ("MID", "LEFT", 0, 0, 3),
+            new BattleNode ("MID", "CENTER", 0, 0, 4),
+            new BattleNode ("MID", "RIGHT", 0, 0, 5),
 
-            new BattlePos ("LONG", "LEFT", 0, 0, 6),
-            new BattlePos ("LONG", "CENTER", 0, 0, 7),
-            new BattlePos ("LONG", "RIGHT", 0, 0, 8)
+            new BattleNode ("BACK", "LEFT", 0, 0, 6),
+            new BattleNode ("BACK", "CENTER", 0, 0, 7),
+            new BattleNode ("BACK", "RIGHT", 0, 0, 8),
+
+            new BattleNode ("NULL", "NULL", -1, -1, -1) // A temporary, off screen position at index 9
         ]
 
     }
 
-    const PLAYER_GRID = createBattleGrid();
-    // Position ID Visual:
-    // SHORT  [0 1 2
-    // MID     3 4 5
-    // LONG    6 7 8]
-
     const ENEMY_GRID = createBattleGrid();
-    // Position ID Visual:
-    // LONG   [6 7 8
-    // MID     3 4 5
-    // SHORT   0 1 2]
+    // Grid Visual:
+    //       Left Center Right
+    // Back   [6    7    8
+    // Mid     3    4    5
+    // Front   0    1    2]
 
-    //======================================================================================================================================================
-    // GENERAL GRID & POSITIONING FUNCTIONS
-    //======================================================================================================================================================
+    // NOTE ----------------------------------------------------------------------------
+      // Enemies have multiple variations separated by Row type, labeled via note-tag (EX: For Enemy '(F) Goblin', <Variants: (M) Goblin, (B) Goblin>)
+      // All Enemies also store their intended Row via note-tag (EX: '(M) Goblin' would have <Row: MID>)
+    //----------------------------------------------------------------------------------
 
-    function clearBattleGrid(grid)
-    {
-        for (const pos of grid)
-        {
-            pos.stationedBattler = null;
-        }
-    }
+    // Plugin Command to Change Enemy's Node (Replaces Enemy Transform)
+        // Takes 3 arguments:
+        // Enemy to Set (enemy ID)
+        // Target Battle Node
+    PluginManager.registerCommand(pluginName, "PositionEnemy", args =>{
+        const enemyToSet = Number(args.enemyToSet);
+        const targetNode = Number(args.targetNode);
 
-    // Function that assigns Battlers to a Position in a Grid
-    function assignBattlerToGrid(grid, battler, posID)
-    {
-        if (posID > 8)
-        {
-            throw new Error(
-                `${posID} for ${battler} EXCEEDS POSITION ID MAXIMUM OF '8'`
-            );
-        }
-        if (posID < 0)
-        {
-            throw new Error(
-                `${posID} for ${battler} BELOW POSITION ID MINIMUM OF '0'`
-            );
-        }
+        console.log("GridCombat: Running 'PositionEnemy' Command");
+        console.log("PositionEnemy: Searching for objects...");
 
-        for (const pos of grid)
+        if (targetNode < -1 || targetNode > 8) {throw new Error("PositionEnemy: Target Node ID is too large or low!");}
+        
+        // Get the Enemy Object
+        let enemyObj = $gameTroop.members()[enemyToSet];
+        if (enemyObj == null) {throw new Error("PositionEnemy: Enemy to Change is Missing!");}
+
+        let oldNodeObj;
+        let targetNodeObj;
+
+        // Get the Old Node object (the original Node)
+        for (const node of ENEMY_GRID)
         {
-            if (pos.posID === posID) 
+            if (node.enemyBattler == enemyObj)
             {
-                if (pos.stationedBattler === null)
-                {
-                    pos.stationedBattler = battler;
-                }
-                else
-                {
-                    throw new Error(
-                        `POSITION ${pos.distance}_${pos.lane} IS ALREADY IN USE`
-                    );
-                }
+                oldNodeObj = node;
+                break;
             }
         }
-    }
+        if (oldNodeObj == null) {console.warn("PositionEnemy: Old Node is Missing!");}
 
-    // Function that swaps the Position of two Battlers
-    function swapBattlersInGrid(grid, battlerA, battlerB)
+        // Get the Target Node object
+        for (const node of ENEMY_GRID)
+        {
+            if (node.posID == targetNode)
+            {
+                targetNodeObj = node;
+            }
+        }
+        if (targetNodeObj == null) {throw new Error("PositionEnemy: Target Node is Missing!");}
+
+        BattleManager.positionEnemy(enemyObj, oldNodeObj, targetNodeObj);
+
+    });
+
+    // PositionEnemy - Handles the setting and potential exchange of Enemy Node positions
+    BattleManager.positionEnemy = function(movingEnemy, oldNode, targetNode)
     {
-        let posA = null;
-        let posB = null;
+        console.log("PositionEnemy: All objects found! Accessing corresponding BattleManager method...");
+        console.log("PositionEnemy: Assigning Node for " + movingEnemy.name() + "...")
 
-        for (const pos in grid)
+        if (ENEMY_GRID[9].enemyBattler != null) {throw new Error("PositionEnemy: Temp Battle Node should not be occupied!");}
+
+        // If the Target Node is occupied, swap the Enemies' positions
+        if (targetNode.enemyBattler != null)
         {
-            if (pos.stationedBattler === battlerA)
-            {
-                posA = pos;
+            console.log("PositionEnemy: Target Node occupied! Exchanging positions...");
+
+            if (oldNode == null) {throw new Error("PositionEnemy: Cannot exchange positions when Old Node was not found!");}
+            if (targetNode == null) {throw new Error("PositionEnemy: Cannot exchange positions when Target Node was not found!");}
+
+            let e1 = movingEnemy; // Original Enemy
+            let e2 = targetNode.enemyBattler; // Occupying Enemy
+
+            // Transform each enemy into their Variant if needed
+            if (targetNode.row != oldNode.row) {
+                e1.transform(BattleManager.getEnemyVariantID(e1, oldNode));
+                e2.transform(BattleManager.getEnemyVariantID(e2, targetNode));
             }
-            if (pos.stationedBattler === battlerB)
-            {
-                posB = pos;
-            }
+
+            // Move e1 to the temp Node
+            console.log("PositionEnemy: Moving E1 to temporary Node.");
+            oldNode.enemyBattler = null;
+            ENEMY_GRID[9].enemyBattler = e1;
+            e1._screenX = ENEMY_GRID[9].screenX;
+            e1._screenY = ENEMY_GRID[9].screenY;
+
+            // Move e2 to the Old Node
+            console.log("PositionEnemy: Moving E2 to E1's original Node");
+            targetNode.enemyBattler = null;
+            oldNode.enemyBattler = e2;
+            e2._screenX = oldNode.screenX;
+            e2._screenY = oldNode.screenY;
+
+            // Move e1 to the Target Node
+            onsole.log("PositionEnemy: Moving E1 to Target Node");
+            targetNode.enemyBattler = e1;
+            e1._screenX = targetNode.screenX;
+            e1._screenY = targetNode.screenY;
+
+            console.log("PositionEnemy: " + e1.name() + " successfully assigned to Node " + targetNode.posID + ", " + targetNode.row + "-" + targetNode.lane + "!");
+            console.log("PositionEnemy: " + e2.name() + " successfully assigned to Node " + oldNode.posID + ", " + oldNode.row + "-" + oldNode.lane + "!");
+
         }
-
-        if (!posA || !posB)
-        {
-            throw new Error("Could not find both battlers in grid");
-        }
-        posA.stationedBattler = battlerB;
-        posB.stationedBattler = battlerA;
-    }
-
-    // Function to get Init Battle Position meta-data for a Troop from a
-    // comment on their first event page
-    function getTroopInitBattlePos()
-    {
-        const list = $gameTroop.troop().pages[0].list;
-
-        for (const command of list)
-        {
-            if (command.code === 108)
-            {
-                const match = command.parameters[0]
-                    .match(/<InitBattlePos:\s*(.*?)>/);
-
-                if (match)
-                {
-                    return match[1]
-                        .split(",")
-                        .map(Number);
-                }
-            }
-        }
-
-        throw new Error("Missing InitBattlePos Comment");
-    }
-
-    //======================================================================================================================================================
-    // INITIAL BATTLE POSITION
-    //======================================================================================================================================================
-
-    // Every Actor has their Initial Battle Position stored in the custom property, ._initBattlePos
-    // In order, every Troop member has their Initial Battle Position stored in comment meta-data, <InitBattlePos: 1, 2, 3, ...>
-    // _initBattlePos = 0, 1,... or 8. Each number corresponds with a Battle Position's ID. The Party Member will
-    // set its Initial Position to the Battle Position with the same ID
-
-    // Assign the property _initBattlePos to all Battlers
-    const _Game_Actor_setup = Game_Actor.prototype.setup;
-    Game_Actor.prototype.setup = function(actorId) {
-        _Game_Actor_setup.call(this, actorId);
-        this._initBattlePos = null;
-    };
-
-    // Initial Battle Position Getter
-    Game_Actor.prototype.battlePos = function() {
-        return this._initBattlePos;
-    };
-
-    // Initial Battle Position Setter
-    Game_Actor.prototype.setBattlePos = function(pos) {
-        this._initBattlePos = pos;
-    };
-
-    // Set max Party Members to 9
-    const _Game_Party_maxBattleMembers = Game_Party.prototype.maxBattleMembers;
-    Game_Party.prototype.maxBattleMembers = function() {
-        return 9; 
-    };
-    
-    //======================================================================================================================================================
-    // ARRANGEMENT MENU
-    //======================================================================================================================================================
-
-    // A new Arrangeent window accessible from the pause menu to preset the Initial Battle Positions of Party Members within
-    // a grid where the tiles correspond with the Positions in the PLAYER_GRID
-    // By reassigning actors to different 'slots' in the Formation, their Initial Battle Position is changed
-    // So if Player Arrangement:
-    // A B X
-    // X X X
-    // X X X
-    // And I swap Party Members A and B, then
-    // B A X
-    // X X X
-    // X X X
-    // A is now SHORT-CENTER POSITION, and B is now SHORT-LEFT POSITION,
-
-    const _Game_Party_initialize = Game_Party.prototype.initialize;
-    Game_Party.prototype.initialize = function() {
-        _Game_Party_initialize.call(this);
-        this._PARTY_ARRANGEMENT = [ null, null, null,
-                                    null, null, null,
-                                    null, null, null ]
-    };
-
-    //
-    //--------------------------------------------
-    // Create Arrangement Display
-    //
-
-    const _Scene_Menu_createCommandWindow = Scene_Menu.prototype.createCommandWindow;
-    Scene_Menu.prototype.createCommandWindow = function() {
-        _Scene_Menu_createCommandWindow.call(this);
-        this._commandWindow.setHandler("arrangement", this.commandArrangment.bind(this))
-    };
-
-    Scene_Menu.prototype.commandArrangment = function() {
-        SceneManager.push(Scene_Arrange);
-        //check Command Formation***
-
-        this._commandWindow.activate();
-    };
-
-    //
-    //--------------------------------------------
-    // Create Arrangement Scene
-    //
-    function Scene_Arrange() {
-        this.initialize(...arguments);
-    }
-
-    Scene_Arrange.prototype = Object.create(Scene_MenuBase.prototype);
-    Scene_Arrange.prototype.constructor = Scene_Arrange;
-
-    Scene_Arrange.prototype.initialize = function() {
-        Scene_MenuBase.prototype.initialize.call(this);
-    };
-
-    Scene_Arrange.prototype.create = function() {
-        Scene_MenuBase.prototype.create.call(this);
-        this.createArrangeWindow();
-    };
-
-    Scene_Arrange.prototype.createArrangeWindow = function() {
-        const rect = this.arrangeWindowRect();
-        this._arrangeWindow = new Window_Arrange(rect);
-        
-   
-        
-        this._arrangeWindow.setHandler("ok", this.onArrangeOk.bind(this));
-        this._arrangeWindow.setHandler("cancel",this.onArrangeCancel.bind(this));
-        
-
-        this.addWindow(this._arrangeWindow);
-    };
-
-    Scene_Arrange.prototype.onArrangeOk = function() {
-        const pendingIndex = this._arrangeWindow.pendingIndex();
-        const currentIndex = this._arrangeWindow.index();
-        
-        console.log("Pending:", pendingIndex, "Current:", currentIndex);
-
-        if (pendingIndex === -1) 
-        {
-            this._arrangeWindow.setPendingIndex(currentIndex);
-        } 
-        // Handle swapping Arrangement slots
+        // Otherwise, move the Enemy to the Target Node
         else 
         {
-            if (pendingIndex === currentIndex) 
+
+            // If they are already assigned to a Node, make sure to empty it
+            if (oldNode != null)
             {
-                this._arrangeWindow.setPendingIndex(-1);
-            } 
-            else 
-            {
-                this.swapArrangement(currentIndex, pendingIndex);
+                // Transform the enemy into their Variant if one is needed
+                if (targetNode.row != oldNode.row) {
+                    movingEnemy.transform(BattleManager.getEnemyVariantID(movingEnemy, targetNode));
+                }
+
+                // Empty original Node
+                oldNode.enemyBattler = null;
+            }
+
+            // Move Enemy to the Target Node
+            targetNode.enemyBattler = movingEnemy;
+            movingEnemy._screenX = targetNode.screenX;
+            movingEnemy._screenY = targetNode.screenY;
+
+            // TODO - check that enemy Row equals Node Row
+
+            console.log("PositionEnemy: " + movingEnemy.name() + " successfully assigned to Node " + targetNode.posID + ", " + targetNode.row + "-" + targetNode.lane + "!");
+
+        }
+    }
+
+    BattleManager.getEnemyVariantID = function(movingEnemy, targetNode)
+    {
+        const enemyVariantNames = movingEnemy.enemy().meta.Variants.split(", "); // List of all the names of the enemy's variants
+        let enemyVariant;
+
+        // Get the Variant name that shares the same Row as the Target Node
+        for (const variantName of enemyVariantNames)
+        {
+            // Search for an enemy in the database with correct name. Verify that its Rows tag is appropriate
+            if (targetNode.row[0] == variantName[1]) {
+                enemyVariant = $dataEnemies.find(enemy => enemy.name === variantName);
+                if (enemyVariant.meta.Row.toLowerCase() != targetNode.row.toLowerCase())
+                {
+                    throw new Error("PositionEnemy: Variant for " + movingEnemy.name() + "found, but its Row does not match Target Node at Row " + targetNode.row);
+                }
+                break;
             }
         }
-        
-        this._arrangeWindow.activate();
-    };
+        if (enemyVariant == null) {throw new Error("PositionEnemy: No Variant at Row " + targetNode.row + " found for " + movingEnemy.name())}
 
-    Scene_Arrange.prototype.swapArrangement = function (index1, index2)
-    {
-        console.log("Swap Data. First Index:", index1, "Second Index:", index2)
-
-        const temp = $gameParty._PARTY_ARRANGEMENT[index1];
-
-        $gameParty._PARTY_ARRANGEMENT[index1] = $gameParty._PARTY_ARRANGEMENT[index2];
-        $gameParty._PARTY_ARRANGEMENT[index2] = temp;
-                
-        this._arrangeWindow.setPendingIndex(-1);
-        this._arrangeWindow.redrawItem(index1);
+        return enemyVariant.id;
 
     }
 
-    Scene_Arrange.prototype.onArrangeCancel = function() {
-        if (this._arrangeWindow.pendingIndex() !== -1) 
-        {
-            this._arrangeWindow.setPendingIndex(-1);
-            this._arrangeWindow.activate(); 
-        } 
-        else 
-        {
-            this.popScene();
-        }
-    };
 
-    Scene_Arrange.prototype.arrangeWindowRect = function() {
-        const ww = 800;
-        const wh = this.calcWindowHeight(12, true);
-        const wx = (Graphics.boxWidth - ww) / 2;
-        const wy = (Graphics.boxHeight - wh) / 2;
-        return new Rectangle(wx, wy, ww, wh);
-    };
+    // TODO (above) - Fix Sprite relocation (Check Game_Enemy, Game_Battler, and Game_Battler_Base
 
-    //
-    //--------------------------------------------
-    // Create Arrangement Window
-    //
-    function Window_Arrange() {
-        this.initialize(...arguments);
-    }
+    // TODO - Store troop index of Enemy
 
-    Window_Arrange.prototype = Object.create(Window_Selectable.prototype);
-    Window_Arrange.prototype.constructor = Window_Arrange;
+    // TODO - When an Enemy dies, empty their Node
 
-    Window_Arrange.prototype.initialize = function(rect) {
-        Window_Selectable.prototype.initialize.call(this, rect);
-        this._pendingIndex = -1;
-        this.refresh();
-        this.select(0);
-        this.activate();
-    };
+    // TODO - Skills
 
-    Window_Arrange.prototype.maxCols = function() {
-        return 3;
-    };
-
-    // Draw Grid Items
-    Window_Arrange.prototype.maxItems = function() {
-        return 9;
-    };
-
-    Window_Arrange.prototype.drawPendingItemBackground = function(index) {
-        if (index === this._pendingIndex) {
-            const rect = this.itemRect(index);
-            const color = ColorManager.pendingColor();
-            this.changePaintOpacity(false);
-            this.contents.fillRect(rect.x, rect.y, rect.width, rect.height, color);
-            this.changePaintOpacity(true);
-        }
-    };
-
-    Window_Arrange.prototype.pendingIndex = function() {
-        return this._pendingIndex;
-    };
-
-    Window_Arrange.prototype.setPendingIndex = function(index) {
-        const lastPendingIndex = this._pendingIndex;
-        this._pendingIndex = index;
-        this.redrawItem(this._pendingIndex);
-        this.redrawItem(lastPendingIndex);
-    };
-
-    Window_Arrange.prototype.maxVisibleItems = function() {
-        const visibleRows = Math.ceil(this.contentsHeight() / this.itemHeight());
-        return visibleRows * this.maxCols();
-    };
-
-    Window_Arrange.prototype.drawAllItems = function() {
-        const topIndex = this.topIndex();
-        for (let i = 0; i < this.maxVisibleItems(); i++) {
-            const index = topIndex + i;
-            if (index < this.maxItems()) {
-                this.drawItemBackground(index);
-                this.drawItem(index);
-            }
-        }
-    };
-
-  
-    Window_Arrange.prototype.itemHeight = function() {
-        return 150;
-    };
-
-    Window_Arrange.prototype.drawItem = function(index) {
-        // Get element in PARTY_ARRANGEMENT that corresponds with the index
-            this.drawPendingItemBackground(index);
-        var arranged_element = $gameParty._PARTY_ARRANGEMENT[index];
-        console.log("Drawing Face");
-
-        // If the element is an actor, save and draw its portrait,
-        // then assign the actor's Initial Battle Position
-        if (arranged_element != null) {
-
-            var rect = this.itemRect(index);
-            this.drawFace(arranged_element.faceName(), arranged_element.faceIndex(), rect.x, rect.y, rect.width, rect.height);
-            arranged_element._initBattlePos = index;
-            console.log(`${arranged_element} has had their Arrangement and Initial Battle Position assigned`)
-
-        }
-
-    };
-
-
-
-    //
-    //--------------------------------------------
-    // Func that adds new Actors to the grid, filling a chosen slot with their image
-    // and setting their _initBattlePos to the corresponding Position in PLAYER_GRID
-    //
-  
-
-    // On new game, set the first party member to the first available grid slot and add them to the PLAYER_GRID
-
-    // On recruitment, set the new party member to the first available grid slot and add them to the PLAYER_GRID
-
-    // On dismissal, remove the party member from the grid slot and the PLAYER_GRID
-
-    // Func to set Party Member _initBattlePos on save load based on stored Arrangment data
-
-    //
-    //--------------------------------------------
-    // Menu command to open Arrangement Window
-    //
-    const _Window_MenuCommand_addOriginalCommands = Window_MenuCommand.prototype.addOriginalCommands;
-    Window_MenuCommand.prototype.addOriginalCommands = function() {
-        _Window_MenuCommand_addOriginalCommands.call(this);
-        this.addCommand("Arrangement", "arrangement", true);
-    };
-
-
-
-    //======================================================================================================================================================
-    // BATTLE START
-    //======================================================================================================================================================
-
-    // On Battle Start...
-      // For each Actor, read their _initBattlePos property
-      // Check if that Position is taken by a partyBattler. If it is, throw new error. If not, assign them to that Position
-      // ...
-      // For each Troop member (aka, Enemy), read their InitBattlePosition notetag meta-data
-      // Check if that Position is taken by an enemyBattler. If it is, throw new error. If not, assign them to that Position
-    const _BattleManager_startBattle = BattleManager.startBattle;
-    BattleManager.startBattle = function() {
-        _BattleManager_startBattle.call(this);
-
-        // Make sure each Grid is clear
-        clearBattleGrid(PLAYER_GRID);
-        clearBattleGrid(ENEMY_GRID);
-        
-        // Assign Actor Positions
-        for (const actor of $gameParty.battleMembers()) {
-            assignBattlerToGrid(PLAYER_GRID, actor, actor.battlePos())
-        }
-        console.log("All Party Members assigned to a Position")
-        console.log($gameTroop.troop())
-
-        // Get the first Event Page comment meta-data on the Initial Positions for each Enemy
-        const troopInitialPos = getTroopInitBattlePos();
-
-        // Ensure there's an equivalent amount of Enemies and Positions
-        if ($gameTroop.members().length != troopInitialPos.length) {
-            throw new Error(
-                "THERE IS AN UNEQUAL AMOUNT OF ENEMIES AND INITIAL POSITIONS IN THE TROOP"
-            );
-        }
-
-        // Assign Enemy Positions
-        let i = 0;
-        troopInitialPos.forEach(initPos => {
-            assignBattlerToGrid(ENEMY_GRID, $gameTroop.members()[i], initPos);
-            i++;
-        });
-        console.log("All Enemies assigned to a Position")
-
-        console.log("Battle Start");
-    };
-
-    //======================================================================================================================================================
-    // BATTLE MENU
-    //======================================================================================================================================================
-
-
-    //======================================================================================================================================================
-    // DURING BATTLE
-    //======================================================================================================================================================
-
-
-    // During Battle...
-      // If an Enemy dies, clear their Position of them
-      // Based on an Enemy's Position, set their Sprite ;ocation
-
-    //======================================================================================================================================================
-    // On New Game
-    //======================================================================================================================================================
-
-
-    const _DataManager_setupNewGame = DataManager.setupNewGame;
-    DataManager.setupNewGame = function()
-    {
-        _DataManager_setupNewGame.call(this);
-        console.log("New Game");
-
-        const partyMembers = $gameParty.members(); 
-        
-        for (let i = 0; i < partyMembers.length; i++)
-        {
-             $gameParty._PARTY_ARRANGEMENT[i] = partyMembers[i];
-             console.log("Arranging Starting Party");
-        }
-    }
-
+    // (M) Demon
+    // (S) Demon
 
 })();
